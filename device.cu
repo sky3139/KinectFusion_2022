@@ -6,16 +6,16 @@ using namespace cv;
 __global__ void depth2camkernel(Patch<uint16_t> pdepth, float3 *output, Intr intr)
 {
     int tx = threadIdx.x; // 640
-    int ty = blockIdx.x;  // 480
-    int rawidx = tx + ty * 640;
-    float pz = pdepth(ty, tx) * 0.0002f; //深度转换为米
-    output[rawidx] = intr.cam2world(tx, ty, pz);
+    int vy = blockIdx.x;  // 480
+    int rawidx = tx + vy * 640;
+    float pz = pdepth(vy, tx) * 0.0002f; //深度转换为米
+    output[rawidx] = intr.cam2world(tx, vy, pz);
 }
 
-__global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, struct Vovel *vol, Intr intr, float *pose)
+__global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, uint8_t *rgbda, uint16_t *ppdepth, struct Grid grid, Intr intr, float *pose)
 {
     int tx = threadIdx.x; // 640
-    int ty = blockIdx.x;  // 480
+    int vy = blockIdx.x;  // 480
 
     __shared__ float cam2base[12];
     // float *cam2base = pose;
@@ -24,18 +24,17 @@ __global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, struct Vove
         for (int i = 0; i < 12; i++)
             cam2base[i] = pose[i];
     }
-    __syncthreads();
 
     // float3 pose_t = make_float3(cam2base[0].z, cam2base[1].z, cam2base[2].z);
     int im_width = 640;
-    float trunc_margin = 0.2f;
+    float trunc_margin = grid.sca * 5;
     float3 base = make_float3(1, 1, 1);
-    for (int i = 0; i < 512; i++)
+    __syncthreads();
+    for (int i = 0; i < grid.size.z; i++)
     {
-
         // 计算小体素的世界坐标weight_old
 
-        float3 vol_world = make_float3(i - 100, tx - 100, ty - 100) * VOXELSIZE;
+        float3 vol_world = grid.getWorld(make_int3(i, tx, vy)); // make_float3(i - 100, tx - 100, vy - 100) * VOXELSIZE;
 
         // //     //计算体素在相机坐标系的坐标
         float tmp_pt[3] = {0};
@@ -49,58 +48,61 @@ __global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, struct Vove
         if (pt_cam_z <= 0)
             continue;
 
-        int pt_pix_x = roundf(intr.fx * (pt_cam_x / pt_cam_z) + intr.cx);
-        int pt_pix_y = roundf(intr.fy * (pt_cam_y / pt_cam_z) + intr.cy);
+        int pt_pix_x = rintf(intr.fx * (pt_cam_x / pt_cam_z) + intr.cx);
+        int pt_pix_y = rintf(intr.fy * (pt_cam_y / pt_cam_z) + intr.cy);
         if (pt_pix_x < 0 || pt_pix_x >= im_width || pt_pix_y < 0 || pt_pix_y >= 480)
             continue;
 
-        uint16_t img_depu2 = pdepth(pt_pix_x, pt_pix_y); //
+        // uint16_t img_depu2 = ppdepth[pt_pix_y * 640 + pt_pix_x]; //
+        uint16_t img_depu2 = pdepth(pt_pix_y, pt_pix_x); //
         float img_dep = img_depu2 * 0.0002f;
         if (img_dep <= 0 || img_dep > 6)
             continue;
         float diff = img_dep - pt_cam_z;
         if (diff <= -trunc_margin)
             continue;
-        int idx = i + tx * 512 + ty * 512 * 512;
-        struct Vovel &p = vol[idx];
+        struct Vovel &p = (grid)(i, tx, vy); //[idx];
         const float dist = fminf(1.0f, __fdividef(diff, trunc_margin));
-
-        float weight_old = (float)p.weight; 
+        float weight_old = (float)p.weight;
         p.weight = p.weight > 250 ? p.weight : p.weight + 1;
         float weight_new = (float)p.weight;
         p.tsdf = (p.tsdf * weight_old + dist) / weight_new;
+        uchar3 rgb_val;
+
+        rgb_val.x = rgbda[(pt_pix_y * 640 + pt_pix_x * 1) * 3];
+        rgb_val.z = rgbda[(pt_pix_y * 640 + pt_pix_x * 1) * 3 + 1];
+        rgb_val.y = rgbda[(pt_pix_y * 640 + pt_pix_x * 1) * 3 + 2];
 
 
-        uchar3 rgb_val = rgb(pt_pix_x, pt_pix_y); // pt->rgb[0];
         uint16_t mval = (p.color.x * weight_old + rgb_val.x) / weight_new;
         p.color.x = mval > 255 ? 255 : mval;
         mval = (p.color.y * weight_old + rgb_val.y) / weight_new;
         p.color.y = mval > 255 ? 255 : mval;
         mval = (p.color.z * weight_old + rgb_val.z) / weight_new;
         p.color.z = mval > 255 ? 255 : mval;
-
     }
 }
-__global__ void exintegrate(struct Vovel *vol, float3 *output, uchar3 *rgb, unsigned int *num)
+__global__ void exintegrate(struct Grid grid, float3 *output, uchar3 *rgb, unsigned int *num)
 {
     int vx = threadIdx.x; // 640
-    int ty = blockIdx.x;  // 480
-
-    for (int vz = 0; vz < 512; vz++)
+    int vy = blockIdx.x;  // 480
+    if (vx >= blockDim.x || vy >= blockDim.x)
+        return;
+    for (int vz = 0; vz < grid.size.z; vz++)
     {
-        int idx = vz + vx * 512 + ty * 512 * 512;
-        const struct Vovel &p = vol[idx];
-        if ((vx == 0 && ty == 0) || (vz == 0 && ty == 0) || (vz == 0 && vx == 0))
+        struct Vovel &p = (grid)(vz, vx, vy); //[idx];
+
+        if ((vx == 0 && vy == 0) || (vz == 0 && vy == 0) || (vz == 0 && vx == 0))
         {
             unsigned int val = atomicInc(num, 0xffffff);
-            output[val] = make_float3(vx - 100, vz - 100, ty - 100) * VOXELSIZE;
+            output[val] = grid.getWorld(make_int3(vz, vx, vy));
             rgb[val] = p.color;
         }
-        if ((p.weight > 0) && fabs(p.tsdf) < 0.20f)
-        // if (tx % 5 == 0 && ty % 5 == 0 & vz % 5 == 0)
+        else if ((p.weight > 0.90) && fabs(p.tsdf) < 0.20f)
+        // if (tx % 5 == 0 && vy % 5 == 0 & vz % 5 == 0)
         {
             unsigned int val = atomicInc(num, 0xffffff);
-            output[val] = make_float3(vx - 100, vz - 100, ty - 100) * VOXELSIZE;
+            output[val] = grid.getWorld(make_int3(vz, vx, vy));
             rgb[val] = p.color;
         }
     }
@@ -108,29 +110,29 @@ __global__ void exintegrate(struct Vovel *vol, float3 *output, uchar3 *rgb, unsi
 __global__ void reset(struct Vovel *vol)
 {
     int tx = threadIdx.x; // 640
-    int ty = blockIdx.x;  // 480
+    int vy = blockIdx.x;  // 480
 
     for (int vz = 0; vz < 512; vz++)
     {
-        int idx = vz + tx * 512 + ty * 512 * 512;
+        int idx = vz + tx * 512 + vy * 512 * 512;
         vol[idx].weight = 0.0f;
         vol[idx].tsdf = 1.0f;
-        vol[idx].color = make_uchar3(0, 0, 0);
+        vol[idx].color = make_uchar3(255, 255, 255);
     }
 }
 
-TSDF::TSDF(float3 size, int2 img_size) : size(size), img_size(img_size)
+TSDF::TSDF(uint3 size, int2 img_size) : size(size), img_size(img_size)
 {
-    cudaMalloc((void **)&DevPtr, size.x * size.y * size.z * sizeof(struct Vovel));
+    // cudaMalloc((void **)&DevPtr, size.x * size.y * size.z * sizeof(struct Vovel));
     ck(cudaGetLastError());
     struct Vovel v;
     v.tsdf = 0.0f;
     v.weight = 1.0f;
 
-    pdepth.creat(640, 480);
-    prgb.creat(640, 480);
-
-    reset<<<size.x, size.y>>>(DevPtr);
+    pdepth.creat(480, 640);
+    prgb.creat(480, 640);
+    grid = new Grid(size);
+    grid->center = make_float3(-3, -2, -2);
     ck(cudaDeviceSynchronize());
 }
 
@@ -153,56 +155,80 @@ void TSDF::addScan(const Mat &depth, const Mat &color, cv::Affine3f pose)
     pdepth.upload(depth.ptr<uint16_t>(), depth.step);
     prgb.upload(color.ptr<uchar3>(), color.step);
 
+    Mat cp; //(color.rows, color.cols, CV_8UC3);
+
+    cv::cvtColor(color, cp, cv::COLOR_BGR2GRAY);
+
+    // cv::transpose(color,cp);
+    // img1 = cv.transpose(img);
+    // prgb.upload(cp.ptr<uchar>(), 480 * 3);
+    uint8_t *rgbda;
+    ck(cudaMallocManaged((void **)&rgbda, 640 * 480 * 3));
+    memcpy(rgbda, color.ptr<uchar>(), 640 * 480 * 3);
+
+    uint16_t *ppdepth;
+    // ck(cudaMemcpy2D(prgb.devPtr, prgb.pitch, (void *)color.ptr<uchar3>(), 640 * 3, sizeof(uchar3) * prgb.cols, prgb.rows, cudaMemcpyHostToDevice));
+
+    // prgb.download(cp.ptr<uchar3>(), cp.step);
+    // cv::imshow("a", cp);
+    // cv::waitKey(100);
+    prgb.print();
+    cout << color.step << " " << sizeof(uchar3) << endl;
     ck(cudaGetLastError());
 
     float *hd_pose;
     cudaMalloc((void **)&hd_pose, 16 * sizeof(float));
     ck(cudaGetLastError());
-
+    cout << pose.matrix << endl;
     cudaMemcpy(hd_pose, pose.matrix.val, 16 * sizeof(float), cudaMemcpyHostToDevice);
     ck(cudaGetLastError());
 
-    integrate<<<size.x, size.y>>>(pdepth, prgb, DevPtr, *pintr, hd_pose);
+    integrate<<<size.x, size.y>>>(pdepth, prgb, rgbda, ppdepth, *grid, *pintr, hd_pose);
     ck(cudaDeviceSynchronize());
     cudaFree(hd_pose);
+    cudaFree(rgbda);
 }
 
-void TSDF::exportCloud(std::shared_ptr<Mat> &cpu_cloud, Mat &cpu_color, cv::Affine3f pose)
+void TSDF::exportCloud(Mat &cpu_cloud, Mat &cpu_color, cv::Affine3f pose)
 {
-    cpu_cloud = std::make_shared<Mat>();
-    cpu_color.create(img_size.x * img_size.y, 1, CV_8UC3); 
-
-    dim3 grid(size.x, size.y, size.z);
-    dim3 block(1, 1, 1);
+    // cpu_cloud.create(img_size.x * img_size.y, 1, CV_32FC3);
+    // cpu_color.create(img_size.x * img_size.y, 1, CV_8UC3);
+    cpu_cloud = Mat();
+    cpu_color = Mat();
     float3 *output;
     unsigned int *num;
-    cudaMallocManaged((void **)&num, sizeof(unsigned int));
-    size_t all_num = size.x * size.y * size.z / 3;
-    *num = 0;
-    cudaMallocManaged((void **)&output, sizeof(float3) * all_num);
+    ck(cudaMallocManaged((void **)&num, sizeof(unsigned int)));
+    size_t all_num = size.x * size.y * size.z / 5;
+    ck(cudaMemset(num, 0x00, sizeof(unsigned int)));
+    ck(cudaMallocManaged((void **)&output, sizeof(float3) * all_num));
 
     uchar3 *d_color;
-    cudaMallocManaged((void **)&d_color, sizeof(uchar3) * all_num);
+    ck(cudaMallocManaged((void **)&d_color, sizeof(uchar3) * all_num));
 
-    exintegrate<<<size.x, size.y>>>(DevPtr, output, d_color, num);
+    exintegrate<<<size.x, size.y>>>(*grid, output, d_color, num);
     ck(cudaDeviceSynchronize());
 
     cout << *num << " " << all_num << endl;
-    cpu_cloud = std::make_shared<Mat>(img_size.x * img_size.y, 1, CV_32FC3);
-    cudaMemcpy((float *)cpu_cloud->data, &output[0].x, sizeof(float3) * (*num), cudaMemcpyDeviceToHost);
-    cudaMemcpy((uint8_t *)cpu_color.data, &d_color[0].x, sizeof(uint8_t) * 3 * (*num), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < *num; i++)
+    {
+        cpu_cloud.push_back(cv::Vec3f(output[i].x, output[i].y, output[i].z));
+        cpu_color.push_back(cv::Vec3b(d_color[i].x, d_color[i].y, d_color[i].z));
+    }
+    // (memcpy(cpu_cloud.ptr<float3>(), output, sizeof(float3) * (*num)));
+    // cudaMemcpy((uint8_t *)cpu_color.data, &d_color[0].x, sizeof(uchar3) * (*num), cudaMemcpyDeviceToHost);
 
     cudaFree(output);
     cudaFree(num);
+    cudaFree(d_color);
 }
-__device__ struct Vovel &TSDF::getVol(int3 pose)
-{
-    int idx = pose.x + pose.y * size.x + pose.z * size.x * size.y;
-    return (DevPtr[idx]);
-}
+// __device__ struct Vovel &TSDF::getVol(int3 pose)
+// {
+//     int idx = pose.x + pose.y * size.x + pose.z * size.x * size.y;
+//     return (DevPtr[idx]);
+// }
 TSDF::~TSDF()
 {
     pdepth.release();
     prgb.release();
-    cudaFree(DevPtr);
+    // cudaFree(DevPtr);
 }

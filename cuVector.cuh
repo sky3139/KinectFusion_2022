@@ -2,7 +2,7 @@
 #include <cuda.h>
 #include <cassert>
 #include <iostream>
-#include "cutil_math.h"
+#include "utils/cutil_math.h"
 // struct Point
 // {
 //     T x, y, z;
@@ -183,12 +183,17 @@ struct Patch
     }
     __device__ inline T &operator()(size_t rows, size_t cols)
     {
+        return devPtr[rows * pitch / sizeof(T) + cols];
+    }
+    __device__ inline  T *get(size_t rows, size_t cols)
+    {
         // if (rows < pitch)
         //     return mat[x];
-        return *((devPtr + rows * pitch / sizeof(T) + cols));
+        return &devPtr[rows * pitch /sizeof(T)+ cols];
     }
+
     __host__ void print()
     {
-        printf("%ld %ld %ld\n", pitch, rows, cols);
+        printf("pitch=%ld rows=%ld cols=%ld\n", pitch, rows, cols);
     }
 };

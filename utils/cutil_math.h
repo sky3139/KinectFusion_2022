@@ -9,9 +9,17 @@ inline __host__ __device__ float3 operator*(float3 a, float b)
 {
     return make_float3(a.x * b, a.y * b, a.z * b);
 }
+inline __host__ __device__ float3 operator*(int3 a, float b)
+{
+    return make_float3(a.x * b, a.y * b, a.z * b);
+}
 inline __host__ __device__ float3 operator-(float3 &b, float3 &a)
 {
     return make_float3(b.x - a.x, b.y - a.y, b.z - a.z);
+}
+inline __host__ __device__ float3 operator+(const float3 &b, float3 &a)
+{
+    return make_float3(b.x + a.x, b.y + a.y, b.z + a.z);
 }
 inline __host__ __device__ float operator*(float4 &b, float3 &a)
 {
