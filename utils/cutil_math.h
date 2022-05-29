@@ -9,21 +9,42 @@ inline __host__ __device__ float3 operator*(float3 a, float b)
 {
     return make_float3(a.x * b, a.y * b, a.z * b);
 }
+inline __host__ __device__ float3 operator/(float3 a, float b)
+{
+    return make_float3(a.x / b, a.y / b, a.z / b);
+}
 inline __host__ __device__ float3 operator*(int3 a, float b)
 {
     return make_float3(a.x * b, a.y * b, a.z * b);
 }
-inline __host__ __device__ float3 operator-(float3 &b, float3 &a)
+inline __host__ __device__ float3 operator*(uint3 a, float b)
+{
+    return make_float3(a.x * b, a.y * b, a.z * b);
+}
+inline __host__ __device__ float3 operator-(const float3 &b,const float3 &a)
 {
     return make_float3(b.x - a.x, b.y - a.y, b.z - a.z);
 }
-inline __host__ __device__ float3 operator+(const float3 &b, float3 &a)
+inline __host__ __device__ float3 operator+(const float3 &b, const float3 &a)
 {
     return make_float3(b.x + a.x, b.y + a.y, b.z + a.z);
+}
+inline __host__ __device__ float3 operator+=(float3 &b, const float3 &a)
+{
+    b = make_float3(b.x + a.x, b.y + a.y, b.z + a.z);
 }
 inline __host__ __device__ float operator*(float4 &b, float3 &a)
 {
     return (b.x * a.x + b.y * a.y + b.z * a.z);
+}
+inline __host__ __device__ float3 operator*(const float3 &v1, const float3 &v2)
+{
+    return make_float3(v1.x * v2.x, v1.y * v2.y, v1.z * v2.z);
+}
+
+inline __host__ __device__ float3 normalized(const float3 &v)
+{
+    return v * rsqrt(dot(v, v));
 }
 
 // #ifndef __CUDACC__

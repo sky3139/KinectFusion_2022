@@ -176,9 +176,9 @@ struct Patch
     __host__ void download(const T *host_ptr_arg, size_t host_step_arg)
     {
         // if (host_step_arg == 0 || devPtr == nullptr || pitch == 0)
-        {
-            printf("%x,%d %x,%ld\n", host_ptr_arg, host_step_arg, devPtr, pitch);
-        }
+        // {
+        //     printf("%x,%d %x,%ld\n", host_ptr_arg, host_step_arg, devPtr, pitch);
+        // }
         ck(cudaMemcpy2D((void *)host_ptr_arg, host_step_arg, devPtr, pitch, sizeof(T) * cols, rows, cudaMemcpyDeviceToHost));
     }
     __device__ inline T &operator()(size_t rows, size_t cols)

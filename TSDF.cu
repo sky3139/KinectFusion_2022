@@ -1,5 +1,6 @@
 
-#include "device.cuh"
+#include "TSDF.cuh"
+#include "RayCast.cuh"
 
 using namespace std;
 using namespace cv;
@@ -12,7 +13,7 @@ __global__ void depth2camkernel(Patch<uint16_t> pdepth, float3 *output, Intr int
     output[rawidx] = intr.cam2world(tx, vy, pz);
 }
 
-__global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, uint8_t *rgbda, uint16_t *ppdepth, struct Grid grid, Intr intr, float *pose)
+__global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, uint8_t *rgbda, struct Grid grid, Intr intr, float *pose)
 {
     int tx = threadIdx.x; // 640
     int vy = blockIdx.x;  // 480
@@ -73,7 +74,6 @@ __global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, uint8_t *rg
         rgb_val.z = rgbda[(pt_pix_y * 640 + pt_pix_x * 1) * 3 + 1];
         rgb_val.y = rgbda[(pt_pix_y * 640 + pt_pix_x * 1) * 3 + 2];
 
-
         uint16_t mval = (p.color.x * weight_old + rgb_val.x) / weight_new;
         p.color.x = mval > 255 ? 255 : mval;
         mval = (p.color.y * weight_old + rgb_val.y) / weight_new;
@@ -123,7 +123,6 @@ __global__ void reset(struct Vovel *vol)
 
 TSDF::TSDF(uint3 size, int2 img_size) : size(size), img_size(img_size)
 {
-    // cudaMalloc((void **)&DevPtr, size.x * size.y * size.z * sizeof(struct Vovel));
     ck(cudaGetLastError());
     struct Vovel v;
     v.tsdf = 0.0f;
@@ -132,7 +131,7 @@ TSDF::TSDF(uint3 size, int2 img_size) : size(size), img_size(img_size)
     pdepth.creat(480, 640);
     prgb.creat(480, 640);
     grid = new Grid(size);
-    grid->center = make_float3(-3, -2, -2);
+    grid->center = make_float3(-3, -2, 0);
     ck(cudaDeviceSynchronize());
 }
 
@@ -155,25 +154,18 @@ void TSDF::addScan(const Mat &depth, const Mat &color, cv::Affine3f pose)
     pdepth.upload(depth.ptr<uint16_t>(), depth.step);
     prgb.upload(color.ptr<uchar3>(), color.step);
 
-    Mat cp; //(color.rows, color.cols, CV_8UC3);
-
-    cv::cvtColor(color, cp, cv::COLOR_BGR2GRAY);
-
     // cv::transpose(color,cp);
     // img1 = cv.transpose(img);
     // prgb.upload(cp.ptr<uchar>(), 480 * 3);
     uint8_t *rgbda;
     ck(cudaMallocManaged((void **)&rgbda, 640 * 480 * 3));
     memcpy(rgbda, color.ptr<uchar>(), 640 * 480 * 3);
-
-    uint16_t *ppdepth;
     // ck(cudaMemcpy2D(prgb.devPtr, prgb.pitch, (void *)color.ptr<uchar3>(), 640 * 3, sizeof(uchar3) * prgb.cols, prgb.rows, cudaMemcpyHostToDevice));
-
     // prgb.download(cp.ptr<uchar3>(), cp.step);
     // cv::imshow("a", cp);
     // cv::waitKey(100);
-    prgb.print();
-    cout << color.step << " " << sizeof(uchar3) << endl;
+    // prgb.print();
+    // cout << color.step << " " << sizeof(uchar3) << endl;
     ck(cudaGetLastError());
 
     float *hd_pose;
@@ -183,7 +175,7 @@ void TSDF::addScan(const Mat &depth, const Mat &color, cv::Affine3f pose)
     cudaMemcpy(hd_pose, pose.matrix.val, 16 * sizeof(float), cudaMemcpyHostToDevice);
     ck(cudaGetLastError());
 
-    integrate<<<size.x, size.y>>>(pdepth, prgb, rgbda, ppdepth, *grid, *pintr, hd_pose);
+    integrate<<<size.x, size.y>>>(pdepth, prgb, rgbda, *grid, *pintr, hd_pose);
     ck(cudaDeviceSynchronize());
     cudaFree(hd_pose);
     cudaFree(rgbda);
@@ -208,7 +200,7 @@ void TSDF::exportCloud(Mat &cpu_cloud, Mat &cpu_color, cv::Affine3f pose)
     exintegrate<<<size.x, size.y>>>(*grid, output, d_color, num);
     ck(cudaDeviceSynchronize());
 
-    cout << *num << " " << all_num << endl;
+    // cout << *num << " " << all_num << endl;
     for (int i = 0; i < *num; i++)
     {
         cpu_cloud.push_back(cv::Vec3f(output[i].x, output[i].y, output[i].z));
@@ -220,6 +212,60 @@ void TSDF::exportCloud(Mat &cpu_cloud, Mat &cpu_color, cv::Affine3f pose)
     cudaFree(output);
     cudaFree(num);
     cudaFree(d_color);
+}
+
+void TSDF::rayCast(Mat &depth, Mat &normal, cv::Affine3f pose)
+{
+
+    Patch<uint16_t> pdepth(img_size.x, img_size.y);
+    Patch<float4> pnormal(img_size.x, img_size.y);
+
+    float *hd_pose;
+    cudaMalloc((void **)&hd_pose, 16 * sizeof(float));
+    ck(cudaGetLastError());
+    cout << pose.matrix << endl;
+    cudaMemcpy(hd_pose, pose.matrix.val, 16 * sizeof(float), cudaMemcpyHostToDevice);
+    ck(cudaGetLastError());
+    Aff3f gpuPose;
+    raycast_kernel<<<img_size.x, img_size.y>>>(pdepth, pnormal, *grid, *pintr, gpuPose);
+    ck(cudaGetLastError());
+
+    // // // cpu_cloud.create(img_size.x * img_size.y, 1, CV_32FC3);
+    depth.create(img_size.x, img_size.y, CV_16UC1);
+    normal.create(img_size.y, img_size.x, CV_32FC4);
+    pdepth.download(depth.ptr<uint16_t>(), depth.step);
+
+    pdepth.release();
+    normal.release();
+    // pnormal.download(depth.ptr<float3>(), normal.step);
+
+    // cpu_cloud = Mat();
+    // cpu_color = Mat();
+    // float3 *output;
+    // unsigned int *num;
+    // ck(cudaMallocManaged((void **)&num, sizeof(unsigned int)));
+    // size_t all_num = size.x * size.y * size.z / 5;
+    // ck(cudaMemset(num, 0x00, sizeof(unsigned int)));
+    // ck(cudaMallocManaged((void **)&output, sizeof(float3) * all_num));
+
+    // uchar3 *d_color;
+    // ck(cudaMallocManaged((void **)&d_color, sizeof(uchar3) * all_num));
+
+    // exintegrate<<<size.x, size.y>>>(*grid, output, d_color, num);
+    // ck(cudaDeviceSynchronize());
+
+    // cout << *num << " " << all_num << endl;
+    // for (int i = 0; i < *num; i++)
+    // {
+    //     cpu_cloud.push_back(cv::Vec3f(output[i].x, output[i].y, output[i].z));
+    //     cpu_color.push_back(cv::Vec3b(d_color[i].x, d_color[i].y, d_color[i].z));
+    // }
+    // // (memcpy(cpu_cloud.ptr<float3>(), output, sizeof(float3) * (*num)));
+    // // cudaMemcpy((uint8_t *)cpu_color.data, &d_color[0].x, sizeof(uchar3) * (*num), cudaMemcpyDeviceToHost);
+
+    // cudaFree(output);
+    // cudaFree(num);
+    cudaFree(hd_pose);
 }
 // __device__ struct Vovel &TSDF::getVol(int3 pose)
 // {
