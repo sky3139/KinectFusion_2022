@@ -131,7 +131,7 @@ TSDF::TSDF(uint3 size, int2 img_size) : size(size), img_size(img_size)
     pdepth.creat(480, 640);
     prgb.creat(480, 640);
     grid = new Grid(size);
-    grid->center = make_float3(-3, -2, 0);
+    grid->center = make_float3(0, 0, 0);
     ck(cudaDeviceSynchronize());
 }
 
@@ -171,7 +171,7 @@ void TSDF::addScan(const Mat &depth, const Mat &color, cv::Affine3f pose)
     float *hd_pose;
     cudaMalloc((void **)&hd_pose, 16 * sizeof(float));
     ck(cudaGetLastError());
-    cout << pose.matrix << endl;
+    // cout << pose.matrix << endl;
     cudaMemcpy(hd_pose, pose.matrix.val, 16 * sizeof(float), cudaMemcpyHostToDevice);
     ck(cudaGetLastError());
 
@@ -214,28 +214,48 @@ void TSDF::exportCloud(Mat &cpu_cloud, Mat &cpu_color, cv::Affine3f pose)
     cudaFree(d_color);
 }
 
-void TSDF::rayCast(Mat &depth, Mat &normal, cv::Affine3f pose)
+void TSDF::rayCast(Mat &depth, Mat &normal, cv::Affine3f camera_pose)
 {
+    Patch<uint16_t> _pdepth(img_size.y, img_size.x);
 
-    Patch<uint16_t> pdepth(img_size.x, img_size.y);
     Patch<float4> pnormal(img_size.x, img_size.y);
+    depth.create(img_size.y, img_size.x, CV_16UC1);
+
+    auto pose_ = cv::Affine3f().translate(Vec3f(-2.5 / 2, -2.5 / 2, -2.5 / 2));
 
     float *hd_pose;
     cudaMalloc((void **)&hd_pose, 16 * sizeof(float));
     ck(cudaGetLastError());
-    cout << pose.matrix << endl;
-    cudaMemcpy(hd_pose, pose.matrix.val, 16 * sizeof(float), cudaMemcpyHostToDevice);
+    // cout << camera_pose.matrix << endl;
+    cudaMemcpy(hd_pose, camera_pose.matrix.val, 16 * sizeof(float), cudaMemcpyHostToDevice);
     ck(cudaGetLastError());
-    Aff3f gpuPose;
-    raycast_kernel<<<img_size.x, img_size.y>>>(pdepth, pnormal, *grid, *pintr, gpuPose);
+
+    cv::Affine3f cam2vol = pose_.inv() * camera_pose;
+    device::Aff3f aff = device::device_cast<device::Aff3f>(cam2vol);
+    device::Mat3f Rinv = device::device_cast<device::Mat3f>(cam2vol.rotation().inv(cv::DECOMP_SVD));
+
+    cv::Vec3i dims_(256, 256, 256);
+    cv::Vec3f vsize(0.02, 0.02, 0.02);
+
+    int3 dims = make_int3(256, 256, 256);
+    float3 vsz = make_float3(0.02, 0.02, 0.02);
+
+    // device::TsdfVolume volume(data_.ptr(), dims, vsz, trunc_dist_, max_weight_);
+    // device::raycast(volume, aff, Rinv, reproj, p, n, raycast_step_factor_, gradient_delta_factor_);
+
+    int threads_per_block = 64;
+    int thread_blocks = (640 * 480 + threads_per_block - 1) / threads_per_block;
+    raycast_kernel<<<size.x, size.y>>>(_pdepth, pnormal, *grid, *pintr, aff, Rinv,hd_pose);
+
+    // raycast_kernel<<<thread_blocks, threads_per_block>>>(pdepth, pnormal, *grid, *pintr, aff, Rinv);
     ck(cudaGetLastError());
 
     // // // cpu_cloud.create(img_size.x * img_size.y, 1, CV_32FC3);
-    depth.create(img_size.x, img_size.y, CV_16UC1);
-    normal.create(img_size.y, img_size.x, CV_32FC4);
-    pdepth.download(depth.ptr<uint16_t>(), depth.step);
+    // normal.create(img_size.y, img_size.x, CV_32FC4);
+    _pdepth.download(depth.ptr<uint16_t>(), depth.step);
 
-    pdepth.release();
+    cv::imshow("tsdfdepth", depth);
+    _pdepth.release();
     normal.release();
     // pnormal.download(depth.ptr<float3>(), normal.step);
 

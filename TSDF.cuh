@@ -16,7 +16,6 @@
 #include "cuVector.cuh"
 #include <math_constants.h>
 
-
 using namespace std;
 using namespace cv;
 #pragma pack(push, 1)
@@ -97,7 +96,10 @@ struct Vovel
     float weight;
     uchar3 color;
 };
-
+struct _Vovel
+{
+   struct Vovel m_data[512];
+};
 __global__ void reset(struct Vovel *vol);
 
 struct Grid
@@ -114,7 +116,7 @@ struct Grid
     }
     __device__ inline Vovel &operator()(int x, int y, int z)
     {
-
+        assert(x < size.x&&y < size.y&&z< size.z);
         return m_data[x + y * size.x + z * size.x * size.y];
     }
     __device__ inline void set(int x, int y, int z, const struct Vovel val)
@@ -127,14 +129,24 @@ struct Grid
         return pos_vol * sca + center;
     }
     //世界坐标
-    __device__ inline struct Vovel fetch(const float3 &p) const
+    __device__ inline struct Vovel fetch(const float3 &p, bool &exi) const
     {
         // rounding to nearest even
         float3 intpose = (p - center) / sca;
+
         int x = __float2int_rn(intpose.x);
         int y = __float2int_rn(intpose.y);
         int z = __float2int_rn(intpose.z);
+        if (x >= size.x || y >= size.y || z >= size.z || x < 0 || y < 0 || z < 0)
+        {
+            exi = false;
+            return m_data[0];
+        }
+        else
+            exi = true;
         return m_data[x + y * size.x + z * size.x * size.y];
+
+        // printf("%d,%d,%d\n",x,y,z);
     }
     __device__ float interpolate(const float3 &p_voxels)
     {
@@ -152,8 +164,8 @@ struct Grid
 
         float tsdf = 0.f;
         tsdf += (this->operator()(g.x + 0, g.y + 0, g.z + 0)).tsdf * (1 - a) * (1 - b) * (1 - c);
-        tsdf += (this->operator()(g.x + 0, g.y + 0, g.z + 1)).tsdf  * (1 - a) * (1 - b) * c;
-        tsdf += (this->operator()(g.x + 0, g.y + 1, g.z + 0)).tsdf  * (1 - a) * b * (1 - c);
+        tsdf += (this->operator()(g.x + 0, g.y + 0, g.z + 1)).tsdf * (1 - a) * (1 - b) * c;
+        tsdf += (this->operator()(g.x + 0, g.y + 1, g.z + 0)).tsdf * (1 - a) * b * (1 - c);
         tsdf += (this->operator()(g.x + 0, g.y + 1, g.z + 1)).tsdf * (1 - a) * b * c;
         tsdf += (this->operator()(g.x + 1, g.y + 0, g.z + 0)).tsdf * a * (1 - b) * (1 - c);
         tsdf += (this->operator()(g.x + 1, g.y + 0, g.z + 1)).tsdf * a * (1 - b) * c;

@@ -3,6 +3,55 @@
 #include "utils/utils.cuh"
 #include "./TSDF.cuh"
 #include <math_constants.h>
+
+namespace device
+{
+    typedef int3 Vec3i;
+    typedef float3 Vec3f;
+    struct Mat3f
+    {
+        float3 data[3];
+    };
+    struct Aff3f
+    {
+        Mat3f R;
+        Vec3f t;
+    };
+
+    template <typename D, typename S>
+    inline D device_cast(const S &source)
+    {
+        return *reinterpret_cast<const D *>(source.val);
+    }
+    template <>
+    inline device::Aff3f device_cast<device::Aff3f, cv::Affine3f>(const Affine3f &source)
+    {
+        device::Aff3f aff;
+        cv::Matx<float, 3, 3> R = source.rotation();
+        cv::Vec3f t = source.translation();
+        aff.R = device_cast<device::Mat3f>(R);
+        aff.t = device_cast<device::Vec3f>(t);
+        return aff;
+    }
+
+}
+    namespace device
+    {
+       inline __device__ Vec3f operator*(const Mat3f &m, const Vec3f &v)
+        {
+            return make_float3(dot(m.data[0], v), dot(m.data[1], v), dot(m.data[2], v));
+        }
+
+         inline __device__ Vec3f operator*(const Aff3f &a, const Vec3f &v) { return a.R * v + a.t; }
+
+         inline __device__ Vec3f tr(const float4 &v) { return make_float3(v.x, v.y, v.z); }
+
+        struct plus
+        {
+             inline __device__ float operator()(float l, float r) const { return l + r; }
+             inline __device__ double operator()(double l, double r) const { return l + r; }
+        };
+    }
 // struct TsdfRaycaster
 // {
 //     TsdfVolume volume;
@@ -117,7 +166,7 @@
 // inline TsdfRaycaster::TsdfRaycaster(const TsdfVolume &_volume, const Aff3f &_aff, const Mat3f &_Rinv, const Reprojector &_reproj)
 //     : volume(_volume), aff(_aff), Rinv(_Rinv), reproj(_reproj) {}
 
-__global__ void raycast_kernel(Patch<uint16_t> depth, Patch<float4> normals, struct Grid grid, struct Intr intr, Aff3f aff);
+__global__ void raycast_kernel(Patch<uint16_t> depth, Patch<float4> normals, struct Grid grid, struct Intr intr, device::Aff3f aff, device::Mat3f inP,float *pose);
 // {
 //     raycaster(depth, normals);
 // };

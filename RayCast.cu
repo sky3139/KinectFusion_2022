@@ -137,7 +137,6 @@ __device__ inline void intersect(float3 ray_org, float3 ray_dir, /*float3 box_mi
     tfar = fminf(fminf(tmax.x, tmax.y), fminf(tmax.x, tmax.z));
 }
 
-
 __device__ float3 compute_normal(const struct Grid &grid, const float3 &p)
 {
     float3 n;
@@ -156,70 +155,190 @@ __device__ float3 compute_normal(const struct Grid &grid, const float3 &p)
 
     return normalized(n);
 }
-__global__ void raycast_kernel(Patch<uint16_t> depth, Patch<float4> normals, struct Grid grid, struct Intr intr, Aff3f aff)
+__global__ void raycast_kernel(Patch<uint16_t> depth, Patch<float4> normals, struct Grid grid, struct Intr intr, device::Aff3f aff, device::Mat3f Rinv, float *pose)
+
+// __global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, uint8_t *rgbda, struct Grid grid, Intr intr, float *pose)
 {
+    int tx = threadIdx.x; // 640
+    int vy = blockIdx.x;  // 480
+
+    __shared__ float cam2base[12];
+    // float *cam2base = pose;
+    if (0 == tx) //同一个thread使用共享内存速度更快
+    {
+        for (int i = 0; i < 12; i++)
+            cam2base[i] = pose[i];
+    }
+  
+    // float3 pose_t = make_float3(cam2base[0].z, cam2base[1].z, cam2base[2].z);
+    int im_width = 640;
+    float trunc_margin = grid.sca * 5;
+    float3 base = make_float3(1, 1, 1);
+    __syncthreads();
+    for (int i = 0; i < grid.size.z; i++)
+    {
+        // 计算小体素的世界坐标weight_old
+
+        float3 vol_world = grid.getWorld(make_int3(i, tx, vy)); // make_float3(i - 100, tx - 100, vy - 100) * VOXELSIZE;
+
+        //     //计算体素在相机坐标系的坐标
+        float tmp_pt[3] = {0};
+        tmp_pt[0] = vol_world.x - cam2base[0 * 4 + 3];
+        tmp_pt[1] = vol_world.y - cam2base[1 * 4 + 3];
+        tmp_pt[2] = vol_world.z - cam2base[2 * 4 + 3];
+        float pt_cam_x = cam2base[0 * 4 + 0] * tmp_pt[0] + cam2base[1 * 4 + 0] * tmp_pt[1] + cam2base[2 * 4 + 0] * tmp_pt[2];
+        float pt_cam_y = cam2base[0 * 4 + 1] * tmp_pt[0] + cam2base[1 * 4 + 1] * tmp_pt[1] + cam2base[2 * 4 + 1] * tmp_pt[2];
+        float pt_cam_z = cam2base[0 * 4 + 2] * tmp_pt[0] + cam2base[1 * 4 + 2] * tmp_pt[1] + cam2base[2 * 4 + 2] * tmp_pt[2];
+
+        // float3 vp =(vol_world-aff.t) ((aff.R * intr.cam2world(x, y, tcurr)) + aff.t);
+
+        if (pt_cam_z <= 0)
+            continue;
+        int pt_pix_x = rintf(intr.fx * (pt_cam_x / pt_cam_z) + intr.cx);
+        int pt_pix_y = rintf(intr.fy * (pt_cam_y / pt_cam_z) + intr.cy);
+        if (pt_pix_x < 0 || pt_pix_x >= im_width || pt_pix_y < 0 || pt_pix_y >= 480)
+            continue;
+        depth(pt_pix_y, pt_pix_x) = pt_cam_z *10000;
+    }
+}
+/* {
     int x = threadIdx.x;
     int y = blockIdx.x;
+
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+    int size = 640 * 480;
 
     if (x >= depth.cols || y >= depth.rows)
         return;
 
     const float qnan = CUDART_NAN_F;
 
-    depth(y, x) = 0;
+    depth(y, x) = 10000;
     normals(y, x) = make_float4(qnan, qnan, qnan, qnan);
 
     float3 ray_org = aff.t;
-    float3 ray_dir = normalized(aff.R * intr.cam2world(x, y, 1.f));
-    float time_step = 0.001f;
+
+    float time_step = 0.01f;
+
+    for (float tcurr = 0.2; tcurr < 5.0; tcurr += time_step)
+    {
+        bool ret;
+        float3 vp = ((aff.R * intr.cam2world(x, y, tcurr)) + aff.t) / 0.02f;
+        int3 ivp;
+        ivp.x = vp.x;
+        ivp.y = vp.y;
+        ivp.z = vp.z;
+        if (ivp.x > 500 || ivp.y > 500 || ivp.z > 500)
+            continue;
+        if (ivp.x < 0 || ivp.y < 0 || ivp.z < 0)
+            continue;
+        // printf("%d %d %d\n", ivp.x, ivp.y, ivp.z);
+        // struct Vovel tsdf_next = grid(ivp.x, ivp.y, ivp.z);
+        // if (tsdf_next.tsdf < 0)
+            depth(y, x) = tcurr * 5000;
+        // if (!ret)
+        //     continue;
+        //   printf("%f %f %f\n", tsdf_next.tsdf,0,0);
+    }
+    // printf("%f %f %f\n", ray_dir.x,ray_dir.y,ray_dir.z);
+
     // We do subtract voxel size to minimize checks after
     // Note: origin of volume coordinate is placed
-    // in the center of voxel (0,0,0), not in the corner of the voxel!
-    float3 box_max = grid.size * grid.sca;
+    // // in the center of voxel (0,0,0), not in the corner of the voxel!
+    // float3 box_max = grid.size * grid.sca;
 
-    float tmin, tmax;
-    intersect(ray_org, ray_dir, box_max, tmin, tmax);
+    // float tmin, tmax;
+    // intersect(ray_org, ray_dir, box_max, tmin, tmax);
 
-    const float min_dist = 0.f;
-    tmin = fmaxf(min_dist, tmin);
-    if (tmin >= tmax)
-        return;
+    // const float min_dist = 0.f;
+    // tmin = fmaxf(min_dist, tmin);
+    // if (tmin >= tmax)
+    //     return;
 
-    tmax -= time_step;
-    float3 vstep = ray_dir * time_step;
-    float3 next = ray_org + ray_dir * tmin;
+    // tmax -= time_step;
+    // float3 vstep = ray_dir * time_step;
+    // float3 next = ray_org + ray_dir * tmin;
+    // bool ret;
+    // struct Vovel tsdf_next = grid.fetch(next, ret);
+    // float voxel_size_inv = 1.0f / grid.sca;
+    // for (float tcurr = tmin; tcurr < tmax; tcurr += time_step)
+    // {
+    //     struct Vovel tsdf_curr = tsdf_next;
+    //     float3 curr = next;
+    //     next += vstep;
 
-    struct Vovel tsdf_next = grid.fetch(next);
-    float voxel_size_inv = 1.0f / grid.sca;
-    for (float tcurr = tmin; tcurr < tmax; tcurr += time_step)
-    {
-        struct Vovel tsdf_curr = tsdf_next;
-        float3 curr = next;
-        next += vstep;
+    //     tsdf_next = grid.fetch(next, ret);
+    //     if (ret == false)
+    //         continue;
 
-        tsdf_next = grid.fetch(next);
-        if (tsdf_curr.tsdf < 0.f && tsdf_next.tsdf > 0.f)
-            break;
+    //     if (tsdf_curr.tsdf < 0.f && tsdf_next.tsdf > 0.f)
+    //         break;
+    //     if (tsdf_curr.tsdf > 0.f && tsdf_next.tsdf < 0.f)
+    //     {
+    //         float Ft = grid.interpolate(curr * voxel_size_inv);
+    //         float Ftdt = grid.interpolate(next * voxel_size_inv);
 
-        if (tsdf_curr.tsdf > 0.f && tsdf_next.tsdf < 0.f)
-        {
-            float Ft = grid.interpolate( curr * voxel_size_inv);
-            float Ftdt = grid.interpolate(next * voxel_size_inv);
+    //         float Ts = tcurr - __fdividef(time_step * Ft, Ftdt - Ft);
 
-            float Ts = tcurr - __fdividef(time_step * Ft, Ftdt - Ft);
+    //         float3 vertex = ray_org + ray_dir * Ts;
+    //         float3 normal = compute_normal(grid, vertex);
 
-            float3 vertex = ray_org + ray_dir * Ts;
-            float3 normal = compute_normal(grid,vertex);
+    //         if (!::isnan(normal.x * normal.y * normal.z))
+    //         {
+    //             normal = Rinv * normal;
+    //             vertex = Rinv * (vertex - aff.t);
 
-            if (!::isnan(normal.x * normal.y * normal.z))
-            {
-                // normal = Rinv * normal;
-                // vertex = Rinv * (vertex - aff.t);
+    //             normals(y, x) = make_float4(normal.x, normal.y, normal.z, 0);
+    //             depth(y, x) = static_cast<ushort>(vertex.z * 1000);
+    //             printf("%f\n", vertex.z);
+    //         }
+    //         break;
+    //     }
+    // }
+} */
+__global__ void raycast_kerne2l(Patch<uint16_t> depth, Patch<float4> normals, struct Grid grid, struct Intr intr, device::Aff3f aff, device::Mat3f Rinv)
+{
+    // int x = threadIdx.x;
+    // int y = blockIdx.x;
 
-                // normals(y, x) = make_float4(normal.x, normal.y, normal.z, 0);
-                // depth(y, x) = static_cast<ushort>(vertex.z * 1000);
-            }
-            break;
-        }
-    } /* for (;;) */
+    // int index = blockIdx.x * blockDim.x + threadIdx.x;
+    // int stride = blockDim.x * gridDim.x;
+    // int size = 640 * 480;
+
+    // if (x >= depth.cols || y >= depth.rows)
+    //     return;
+
+    // float3 start_pt = aff.t;
+    // for (int i = index; i < size; i += stride)
+    // {
+    //     float current_depth = 0;
+    //     while (current_depth < 5)
+    //     {
+    //         float3 point =intr.cam2world(x, y, current_depth);// GetPoint3d(i, current_depth, sensor);
+    //         point = camera_pose * point;
+    //         Voxel v = volume->GetInterpolatedVoxel(point);
+    //         if (v.weight == 0)
+    //         {
+    //             current_depth += volume->GetOptions().truncation_distance;
+    //         }
+    //         else
+    //         {
+    //             current_depth += v.sdf;
+    //         }
+    //         if (v.weight != 0 && v.sdf < volume->GetOptions().voxel_size)
+    //             break;
+    //     }
+    //     if (current_depth < volume->GetOptions().max_sensor_depth)
+    //     {
+    //         float3 point = GetPoint3d(i, current_depth, sensor);
+    //         point = camera_pose * point;
+    //         Voxel v = volume->GetInterpolatedVoxel(point);
+    //         virtual_rgb[i] = v.color;
+    //     }
+    //     else
+    //     {
+    //         virtual_rgb[i] = make_uchar3(0, 0, 0);
+    //     }
+    // }
 }

@@ -5,7 +5,7 @@ int main()
 {
     // loguru::g_stderr_verbosity = 9; // print everything
 
-    DataSet<float> dt("/home/lei/dataset/paper/0");
+    DataSet<float> dt("/home/lei/dataset/paper/f3_long_office");
     ck(cudaGetLastError());
 
     cv::viz::Viz3d viz1("viz1"), viz2("viz2");
@@ -28,7 +28,7 @@ int main()
         viz1.showWidget("depthmode222", cv::viz::WCloud(cpu_cloud2, cpu_color));
         Mat depth_out,normal;
         tsdf.rayCast(depth_out,normal,pose);
-        // viz1.setViewerPose(pose);
+        viz1.setViewerPose(pose);
         // Mat depth_color, cpu_cloud,cpu_color;
         // tsdf.depth2cam(depth, rgb, depth_color, cpu_color, cv::Affine3f::Identity());
         // cv::Affine3f viewpose = cv::Affine3f::Identity();
