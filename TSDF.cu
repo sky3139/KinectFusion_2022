@@ -107,17 +107,16 @@ __global__ void exintegrate(struct Grid grid, float3 *output, uchar3 *rgb, unsig
         }
     }
 }
-__global__ void reset(struct Vovel *vol)
+__global__ void reset(struct _Vovel *vol)
 {
     int tx = threadIdx.x; // 640
     int vy = blockIdx.x;  // 480
-
     for (int vz = 0; vz < 512; vz++)
     {
-        int idx = vz + tx * 512 + vy * 512 * 512;
-        vol[idx].weight = 0.0f;
-        vol[idx].tsdf = 1.0f;
-        vol[idx].color = make_uchar3(255, 255, 255);
+        // int idx = vz + tx * 512 + vy * 512 * 512;
+        vol->m_data[tx][vy][vz].weight = 0.0f;
+        vol->m_data[tx][vy][vz].tsdf = 1.0f;
+        vol->m_data[tx][vy][vz].color = make_uchar3(255, 255, 255);
     }
 }
 
@@ -131,7 +130,7 @@ TSDF::TSDF(uint3 size, int2 img_size) : size(size), img_size(img_size)
     pdepth.creat(480, 640);
     prgb.creat(480, 640);
     grid = new Grid(size);
-    grid->center = make_float3(0, 0, 0);
+    grid->center = make_float3(-3, -2, 0);
     ck(cudaDeviceSynchronize());
 }
 
@@ -245,7 +244,7 @@ void TSDF::rayCast(Mat &depth, Mat &normal, cv::Affine3f camera_pose)
 
     int threads_per_block = 64;
     int thread_blocks = (640 * 480 + threads_per_block - 1) / threads_per_block;
-    raycast_kernel<<<size.x, size.y>>>(_pdepth, pnormal, *grid, *pintr, aff, Rinv,hd_pose);
+    raycast_kernel<<<size.x, size.y>>>(_pdepth, pnormal, *grid, *pintr, aff, Rinv, hd_pose);
 
     // raycast_kernel<<<thread_blocks, threads_per_block>>>(pdepth, pnormal, *grid, *pintr, aff, Rinv);
     ck(cudaGetLastError());

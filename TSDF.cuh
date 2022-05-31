@@ -15,6 +15,7 @@
 #include <thrust/extrema.h>
 #include "cuVector.cuh"
 #include <math_constants.h>
+#include <iostream>
 
 using namespace std;
 using namespace cv;
@@ -98,30 +99,30 @@ struct Vovel
 };
 struct _Vovel
 {
-   struct Vovel m_data[512];
+    struct Vovel m_data[512][512][512];
 };
-__global__ void reset(struct Vovel *vol);
+__global__ void reset(struct _Vovel *vol);
 
 struct Grid
 {
-    float3 center;        //中心坐标
-    uint3 size;           //体素格子尺寸
-    struct Vovel *m_data; //数据首指针
+    float3 center;         //中心坐标
+    uint3 size;            //体素格子尺寸
+    struct _Vovel *m_data; //数据首指针
     float sca;
     Grid(uint3 size) : size(size)
     {
-        cudaMalloc((void **)&m_data, size.x * size.y * size.z * sizeof(struct Vovel));
+        cudaMalloc((void **)&m_data, sizeof(struct _Vovel));
         reset<<<size.x, size.y>>>(m_data);
         sca = 0.01f;
     }
     __device__ inline Vovel &operator()(int x, int y, int z)
     {
-        assert(x < size.x&&y < size.y&&z< size.z);
-        return m_data[x + y * size.x + z * size.x * size.y];
+        // assert(x < size.x && y < size.y && z < size.z);
+        return m_data->m_data[x][y][z];
     }
     __device__ inline void set(int x, int y, int z, const struct Vovel val)
     {
-        m_data[x + y * size.x + z * size.x * size.y] = val;
+        m_data->m_data[x][y][z] = val;
     }
     __device__ inline float3 getWorld(int3 pos_vol)
     {
@@ -140,11 +141,11 @@ struct Grid
         if (x >= size.x || y >= size.y || z >= size.z || x < 0 || y < 0 || z < 0)
         {
             exi = false;
-            return m_data[0];
+            return m_data->m_data[0][0][0];
         }
         else
             exi = true;
-        return m_data[x + y * size.x + z * size.x * size.y];
+        return m_data->m_data[x][y][z];
 
         // printf("%d,%d,%d\n",x,y,z);
     }
@@ -172,6 +173,24 @@ struct Grid
         tsdf += (this->operator()(g.x + 1, g.y + 1, g.z + 0)).tsdf * a * b * (1 - c);
         tsdf += (this->operator()(g.x + 1, g.y + 1, g.z + 1)).tsdf * a * b * c;
         return tsdf;
+    }
+    __host__ void savefile()
+    {
+        std::fstream f("tsdf.bin", std::ios::out);
+        struct _Vovel *phost;
+        cudaMallocHost((void **)&phost, sizeof(struct _Vovel));
+        cudaMemcpy(phost, m_data, sizeof(struct _Vovel), cudaMemcpyDeviceToHost);
+        for (size_t i = 0; i < 512; i++)
+            for (size_t j = 0; j < 512; j++)
+                for (size_t k = 0; k < 512; k++)
+                {
+                    f.write((const char *)&phost->m_data[i][j][k].tsdf, 8);
+                    // if (phost->m_data[i][j][k].weight > 0.3)
+                    //     printf("a\n");
+                }
+        // cudaFreeHost(phost);
+        f.close();
+        assert(0);
     }
 };
 
