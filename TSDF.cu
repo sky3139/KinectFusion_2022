@@ -13,7 +13,7 @@ __global__ void depth2camkernel(Patch<uint16_t> pdepth, float3 *output, Intr int
     output[rawidx] = intr.cam2world(tx, vy, pz);
 }
 
-__global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, uint8_t *rgbda, struct Grid grid, Intr intr, float *pose)
+__global__ void integrate(cudaTextureObject_t obj, Patch<uint16_t> pdepth, Patch<uchar3> rgb, uint8_t *rgbda, struct Grid grid, Intr intr, float *pose)
 {
     int tx = threadIdx.x; // 640
     int vy = blockIdx.x;  // 480
@@ -55,7 +55,9 @@ __global__ void integrate(Patch<uint16_t> pdepth, Patch<uchar3> rgb, uint8_t *rg
             continue;
 
         // uint16_t img_depu2 = ppdepth[pt_pix_y * 640 + pt_pix_x]; //
-        uint16_t img_depu2 = pdepth(pt_pix_y, pt_pix_x); //
+        // uint16_t img_depu2 = pdepth(pt_pix_y, pt_pix_x); //
+        uint16_t img_depu2 = tex2D<uint16_t>(obj,pt_pix_x, pt_pix_y); //
+
         float img_dep = img_depu2 * 0.0002f;
         if (img_dep <= 0 || img_dep > 6)
             continue;
@@ -147,12 +149,14 @@ void TSDF::depth2cam(const Mat &depth_in, const Mat &color_in, Mat &cloud_out, M
     color_out = color_in.reshape(3, color_in.rows * color_in.cols);
     cudaFree(d_cloud);
 }
+#include "TextureBinder.hpp"
 void TSDF::addScan(const Mat &depth, const Mat &color, cv::Affine3f pose)
 {
 
     pdepth.upload(depth.ptr<uint16_t>(), depth.step);
     prgb.upload(color.ptr<uchar3>(), color.step);
 
+    Cuda::TextureBinder tb(pdepth);
     // cv::transpose(color,cp);
     // img1 = cv.transpose(img);
     // prgb.upload(cp.ptr<uchar>(), 480 * 3);
@@ -174,7 +178,7 @@ void TSDF::addScan(const Mat &depth, const Mat &color, cv::Affine3f pose)
     cudaMemcpy(hd_pose, pose.matrix.val, 16 * sizeof(float), cudaMemcpyHostToDevice);
     ck(cudaGetLastError());
 
-    integrate<<<size.x, size.y>>>(pdepth, prgb, rgbda, *grid, *pintr, hd_pose);
+    integrate<<<size.x, size.y>>>(tb.obj, pdepth, prgb, rgbda, *grid, *pintr, hd_pose);
     ck(cudaDeviceSynchronize());
     cudaFree(hd_pose);
     cudaFree(rgbda);

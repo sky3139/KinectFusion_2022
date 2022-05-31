@@ -5,7 +5,7 @@ int main()
 {
     // loguru::g_stderr_verbosity = 9; // print everything
 
-    DataSet<float> dt("/home/lei/dataset/paper/f3_long_office");
+    DataSet<float> dt("/dataset/paper/f3_long_office");
     ck(cudaGetLastError());
 
     cv::viz::Viz3d viz1("viz1");

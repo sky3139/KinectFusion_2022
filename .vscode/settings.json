@@ -70,6 +70,8 @@
         "typeinfo": "cpp",
         "variant": "cpp",
         "shape": "cpp",
-        "valarray": "cpp"
+        "valarray": "cpp",
+        "camera": "cpp",
+        "graphicscontext": "cpp"
     }
 }
