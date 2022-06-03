@@ -72,6 +72,9 @@
         "shape": "cpp",
         "valarray": "cpp",
         "camera": "cpp",
-        "graphicscontext": "cpp"
+        "graphicscontext": "cpp",
+        "barrier": "cpp",
+        "attributedispatchers": "cpp",
+        "state": "cpp"
     }
 }

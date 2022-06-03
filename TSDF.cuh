@@ -216,7 +216,4 @@ public:
     void rayCast(Mat &depth, Mat &normal, cv::Affine3f pose);
     __device__ struct Vovel &getVol(int3 pose);
     ~TSDF();
-
-private:
-    // struct Vovel *DevPtr;
 };
